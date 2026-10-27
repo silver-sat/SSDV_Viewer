@@ -157,7 +157,7 @@ class ssdv_image:
 
     def decode_image(self) -> None:
         # Decode the binary file to a JPEG image using the SSDV decoder
-        result = subprocess.run(["./src/ssdv", "-d", self.bin_filename, self.image_filename], capture_output=True)
+        result = subprocess.run(["./src/ssdv", "-d", "-l", str(self.frame_size), self.bin_filename, self.image_filename], capture_output=True)
         if result.returncode != 0:
             print(f"Error decoding SSDV: {result.stderr.decode()}") 
 

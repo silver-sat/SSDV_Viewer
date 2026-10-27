@@ -11,7 +11,7 @@ import os
 delay_time = 1
 
 if len(sys.argv) < 2:
-    filename = "./data/testpic.bin"
+    filename = "./data/FINAL_IMAGE.bin"
 else:
     filename = sys.argv[1]
 
@@ -33,7 +33,7 @@ while True:
     with open(filename, "rb") as f:
         print(f"Transmitting {filename} to {UDP_IP}:{UDP_PORT} (repeat {file_repeat})")
         while True:
-            data = f.read(256)
+            data = f.read(195)
             if not data:
                 break
             sock.sendto(data, (UDP_IP, UDP_PORT))
