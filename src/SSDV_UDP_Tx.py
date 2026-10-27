@@ -11,7 +11,7 @@ import os
 delay_time = 1
 
 if len(sys.argv) < 2:
-    filename = "./ssdv/testpic.bin"
+    filename = "./data/testpic.bin"
 else:
     filename = sys.argv[1]
 
