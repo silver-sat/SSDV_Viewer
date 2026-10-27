@@ -1,3 +1,12 @@
+# SSDV_Viewer.py - PySimpleGUI application to display SSDV images streamed over UDP
+# The application listens for SSDV frames on a specified UDP port, decodes the frames,
+#  and displays the resulting image in a GUI window. It also provides options to 
+# print the image or clear the display. 
+#
+# Last update: 2024-06-10 DJC
+#
+# Revision history: 2024-06-10 DJC - Initial release
+
 from pathlib import Path
 import PySimpleGUI as sg
 import matplotlib.image as mpimg
