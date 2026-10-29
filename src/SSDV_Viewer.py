@@ -26,6 +26,9 @@ socket_timeout = 0.05  # Timeout for the UDP socket in seconds
 frame_count = 0  # Counter for the number of frames processed
 frame_pos = 0  # Position of the next frame to read
 buf_size = 1024  # Size of the buffer for receiving UDP packets
+SSDV_APP_WIN = "./src/ssdv-win.exe"
+SSDV_APP_UNIX = "./src/ssdv"
+SSDV_APP = SSDV_APP_WIN if os.name == "nt" else SSDV_APP_UNIX
 
 class ssdv_frame:
     def __init__(self, frame: bytes, source: str = "") -> None:
@@ -127,6 +130,11 @@ class ssdv_image:
     def add_frame(self, frame: ssdv_frame) -> None:
        # Add an SSDV frame. If its the first frame, set image parameters. Otherwise, check that the frame is valid and matches the image parameters. 
        # TODO: Add error handling for invalid frames or mismatched parameters. 
+
+       # if the image_id of the new frame doesn't match the current image, clear the image and use the new frame to start over
+        if self.frames and frame.image_id != self.image_id:
+            self.clear()
+
         if len(self.frames) == 0:  # this is the first frame, so set the image parameters
             self.image_id = frame.image_id
             self.frame_size = frame.size
@@ -157,9 +165,22 @@ class ssdv_image:
 
     def decode_image(self) -> None:
         # Decode the binary file to a JPEG image using the SSDV decoder
-        result = subprocess.run(["./src/ssdv", "-d", "-l", str(self.frame_size), self.bin_filename, self.image_filename], capture_output=True)
+        result = subprocess.run([SSDV_APP, "-d", "-l", str(self.frame_size), self.bin_filename, self.image_filename], capture_output=True)
         if result.returncode != 0:
-            print(f"Error decoding SSDV: {result.stderr.decode()}") 
+            error_details = [
+                f"{stream_name}: {output.decode(errors='replace').strip()}"
+                for stream_name, output in (
+                    ("stderr", result.stderr),
+                    ("stdout", result.stdout),
+                )
+                if output.strip()
+            ]
+            if not error_details:
+                error_details.append("no diagnostic output")
+            print(
+                f"Error decoding SSDV (exit code {result.returncode}): "
+                f"{' | '.join(error_details)}"
+            )
 
 
 def format_frame_details(frame: ssdv_frame) -> str:
@@ -205,6 +226,28 @@ def clear_plot_image(image_artist: AxesImage, canvas: FigureCanvasTkAgg) -> None
 
 
 def get_wlan_ip() -> str:
+
+    if os.name == "nt":
+        powershell_command = (
+            "$adapter = Get-NetAdapter -Physical | "
+            "Where-Object { $_.NdisPhysicalMedium -eq 9 -and $_.Status -eq 'Up' } | "
+            "Select-Object -First 1; "
+            "if ($adapter) { "
+            "Get-NetIPAddress -InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 "
+            "-ErrorAction SilentlyContinue | "
+            "Where-Object { $_.IPAddress -and $_.IPAddress -notlike '169.254.*' } | "
+            "Select-Object -First 1 -ExpandProperty IPAddress "
+            "}"
+        )
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", powershell_command],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return result.stdout.strip()
+        return "unavailable"
+
     hardware_ports = subprocess.run(
         ["networksetup", "-listallhardwareports"],
         capture_output=True,
@@ -334,10 +377,11 @@ def main() -> None:
         ],
         [sg.Text(f"WLAN IP address: {get_wlan_ip()}", justification="center", expand_x=True)],
     ]
+    screen_width, screen_height = sg.Window.get_screen_size()
     window = sg.Window(
         "SSDV Image Viewer",
         layout,
-        size=(1200, 720),
+        size=(int(screen_width * 0.9), int(screen_height * 0.9)),
         resizable=True,
         finalize=True,
     )
