@@ -3,9 +3,10 @@
 #  and displays the resulting image in a GUI window. It also provides options to 
 # print the image or clear the display. 
 #
-# Last update: 2024-06-10 DJC
+# Last update: 2026-10-29 DJC
 #
-# Revision history: 2024-06-10 DJC - Initial release
+# Revision history: 2026-10-26 DJC - Initial release
+#                   2026-10-29 DJC - Switched to PySide6 and updated GUI layout
 
 from pathlib import Path
 import sys
