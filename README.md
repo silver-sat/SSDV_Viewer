@@ -28,4 +28,4 @@ To encode JPEGs in `data` as SSDV `.bin` files with 195-byte packets, run:
 python src/SSDV_Generator.py
 ```
 
-Each JPEG gets a sequential image ID, starting at 0.
+Each JPEG gets a sequential image ID, starting at 1.
