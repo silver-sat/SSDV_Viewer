@@ -7,30 +7,14 @@
 import socket
 import sys
 import time
-import os
 from collections import Counter
+from pathlib import Path
 
 delay_time = 1
 frame_size = 256
 
-if len(sys.argv) < 2:
-    filename = "./data/testpic.bin"
-else:
-    filename = sys.argv[1]
-
-if len(sys.argv) > 2:
-    UDP_IP = sys.argv[2]
-else:
-    UDP_IP = "localhost"
-
-if len(sys.argv) > 3:
-    UDP_PORT = int(sys.argv[3])
-else:
-    UDP_PORT = 5030
-
-
-def estimate_frame_size(filename: str) -> int | None:
-    with open(filename, "rb") as ssdv_file:
+def estimate_frame_size(filename: Path) -> int | None:
+    with filename.open("rb") as ssdv_file:
         data = ssdv_file.read()
 
     frame_starts = [
@@ -50,22 +34,61 @@ def estimate_frame_size(filename: str) -> int | None:
     return frame_lengths.most_common(1)[0][0]
 
 
-estimated_frame_size = estimate_frame_size(filename)
-if estimated_frame_size is not None:
-    frame_size = estimated_frame_size
-    print(f" Now transmitting {filename} to {UDP_IP}:{UDP_PORT}. Estimated frame size: {frame_size}")
-
-# Set up the UDP socket
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-file_repeat = 1
-
-while True:
-    with open(filename, "rb") as f:
-        print(f"Transmitting {filename} to {UDP_IP}:{UDP_PORT} (repeat {file_repeat})")
+def send_file(
+    sock: socket.socket,
+    filename: Path,
+    packet_size: int,
+    destination: tuple[str, int],
+) -> None:
+    # print(f"Transmitting {filename} to {destination[0]}:{destination[1]} (repeat {repeat})")
+    with filename.open("rb") as ssdv_file:
         while True:
-            data = f.read(frame_size)
+            data = ssdv_file.read(packet_size)
             if not data:
                 break
-            sock.sendto(data, (UDP_IP, UDP_PORT))
+            sock.sendto(data, destination)
             time.sleep(delay_time)  # small delay to avoid overwhelming the network
-        file_repeat += 1
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        source = Path(__file__).resolve().parent.parent / "data"
+    else:
+        source = Path(sys.argv[1])
+
+    udp_ip = sys.argv[2] if len(sys.argv) > 2 else "localhost"
+    udp_port = int(sys.argv[3]) if len(sys.argv) > 3 else 5030
+    destination = (udp_ip, udp_port)
+
+    if source.is_dir():
+        filenames = sorted(source.glob("*.bin"))
+        if not filenames:
+            # print(f"No .bin files found in {source}", file=sys.stderr)
+            sys.exit(1)
+
+        estimated_frame_sizes = {
+            filename: estimate_frame_size(filename) for filename in filenames
+        }
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            while True:
+                for filename in filenames:
+                    estimated_size = estimated_frame_sizes[filename]
+                    packet_size = estimated_size or frame_size
+                    for file_repeat in (1, 2):
+                        send_file(sock, filename, packet_size, destination)
+    elif source.is_file():
+        estimated_frame_size = estimate_frame_size(source)
+        packet_size = estimated_frame_size or frame_size
+
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            file_repeat = 1
+            while True:
+                send_file(sock, source, packet_size, destination)
+                file_repeat += 1
+    else:
+        # print(f"Input path does not exist: {source}", file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,4 +1,4 @@
-# SSDV_Viewer.py - PySimpleGUI application to display SSDV images streamed over UDP
+# SSDV_Viewer.py - PySide6 application to display SSDV images streamed over UDP
 # The application listens for SSDV frames on a specified UDP port, decodes the frames,
 #  and displays the resulting image in a GUI window. It also provides options to 
 # print the image or clear the display. 
@@ -8,21 +8,43 @@
 # Revision history: 2024-06-10 DJC - Initial release
 
 from pathlib import Path
-import PySimpleGUI as sg
+import sys
 import matplotlib.image as mpimg
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 from matplotlib.image import AxesImage
-import time
 import os
 import subprocess
-import numpy as np
 import zlib
 import socket
+from collections import Counter
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QFont, QPixmap
+from PySide6.QtWidgets import (
+    QApplication,
+    QButtonGroup,
+    QDialog,
+    QFileDialog,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 # Global variables
 GUI_timeout = 0.01  # Delay between frames in seconds
-socket_timeout = 0.05  # Timeout for the UDP socket in seconds
+WINDOW_BACKGROUND_COLOR = "#1c1c1c"
+BUTTON_STYLE = (
+    "QPushButton { background-color: #2563eb; color: white; "
+    "border: none; border-radius: 8px; }"
+    "QPushButton:hover { background-color: #3b82f6; }"
+    "QPushButton:pressed { background-color: #1d4ed8; }"
+)
 frame_count = 0  # Counter for the number of frames processed
 frame_pos = 0  # Position of the next frame to read
 buf_size = 1024  # Size of the buffer for receiving UDP packets
@@ -205,7 +227,7 @@ def format_frame_details(frame: ssdv_frame) -> str:
 def update_plot_image(
     jpeg_filename: str | Path,
     image_artist: AxesImage,
-    canvas: FigureCanvasTkAgg,
+    canvas: FigureCanvasQTAgg,
 ) -> None:
     image = mpimg.imread(jpeg_filename)
     height, width = image.shape[:2]
@@ -217,7 +239,7 @@ def update_plot_image(
     canvas.draw()
 
 
-def clear_plot_image(image_artist: AxesImage, canvas: FigureCanvasTkAgg) -> None:
+def clear_plot_image(image_artist: AxesImage, canvas: FigureCanvasQTAgg) -> None:
     image_artist.set_data([[0.2]])
     image_artist.set_extent((-0.5, 0.5, 0.5, -0.5))
     image_artist.axes.set_xlim(-0.5, 0.5)
@@ -284,140 +306,334 @@ def get_next_frame_UDP(sock: socket.socket) -> ssdv_frame | None:
         data, addr = sock.recvfrom(buf_size)
         if data:
             return ssdv_frame(data, source=f"{addr}")
-    except socket.timeout:
+    except (socket.timeout, BlockingIOError):
         return None
     except Exception as e:
         print(f"Error receiving UDP frame: {e}")
         return None
     
-def get_next_frame():
-    global frame_pos
-    filename = "ssdv_frames.bin"
-    frame_size = 256  # Size of each SSDV frame in bytes
-    with open(filename, "rb") as f: 
-        f.seek(frame_pos)  # Move to the next frame position
-        bytes = f.read(frame_size)
-        frame_pos = f.tell()  # Update the position for the next read
-    return ssdv_frame(bytes, source=filename) if bytes else None      
-   
-def main() -> None:
- ## The Main function for SSDV_Viewer
+def get_ssdv_frame_size(filename: str | Path) -> int:
+    with open(filename, "rb") as ssdv_file:
+        data = ssdv_file.read()
 
-# set up the UDP socket
-    UDP_IP = "0.0.0.0"
-    UDP_PORT = 5030
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind((UDP_IP, UDP_PORT))
-    # set a timeout for the socket to allow periodic GUI updates
-    sock.settimeout(socket_timeout)
-
-# Set up the temp SSDV image
-    ssdv_image_temp = ssdv_image("temp_image")
-
-# set up the matplotlib figure and axes
-    figure = Figure(figsize=(8, 5), tight_layout=True)
-    axes = figure.add_subplot(111)
-    image_artist = axes.imshow([[0.2]], cmap="gray", vmin=0, vmax=1)
-    axes.axis("off")
-
-# set up the PySimpleGUI layout
-    layout = [
-        [
-            sg.Frame(
-                "Received SSDV Image",
-                [[sg.Canvas(key="-PLOT-", expand_x=True, expand_y=True)]],
-                expand_x=True,
-                expand_y=True,
-            ),
-            sg.Frame(
-                "Latest SSDV frame",
-                [
-                    [
-                        sg.Text(
-                            "Total frames: 0",
-                            key="-FRAME-COUNT-",
-                            font=("Helvetica", 16, "bold"),
-                            text_color="green",
-                            background_color="black",
-                            expand_x=True,
-                        )
-                    ],
-                    [
-                        sg.Multiline(
-                            "Waiting for a frame...",
-                            key="-FRAME-DETAILS-",
-                            size=(34, 28),
-                            font=("Helvetica", 14, "bold"),
-                            text_color="green",
-                            background_color="black",
-                            disabled=True,
-                            expand_x=True,
-                            expand_y=True,
-                        )
-                    ],
-                ],
-                title_color="green",
-                background_color="black",
-                expand_y=True,
-            ),
-        ],
-        [
-            sg.Column(
-                [
-                    [
-                        sg.Button("Print", size=(12, 2), font=("Helvetica", 14, "bold")),
-                        sg.Button("Clear", size=(12, 2), font=("Helvetica", 14, "bold")),
-                        sg.Button("Exit", size=(12, 2), font=("Helvetica", 14, "bold")),
-                    ]
-                ],
-                justification="center",
-                element_justification="center",
-                expand_x=True,
-            ),
-        ],
-        [sg.Text(f"WLAN IP address: {get_wlan_ip()}", justification="center", expand_x=True)],
+    frame_starts = [
+        offset
+        for offset in range(len(data) - 1)
+        if data[offset] == 0x55 and data[offset + 1] in (0x66, 0x67)
     ]
-    screen_width, screen_height = sg.Window.get_screen_size()
-    window = sg.Window(
-        "SSDV Image Viewer",
-        layout,
-        size=(int(screen_width * 0.9), int(screen_height * 0.9)),
-        resizable=True,
-        finalize=True,
+    if not frame_starts:
+        return 256
+    if len(frame_starts) == 1:
+        return len(data)
+
+    frame_lengths = Counter(
+        next_start - start
+        for start, next_start in zip(frame_starts, frame_starts[1:])
     )
+    return frame_lengths.most_common(1)[0][0]
 
-    canvas = FigureCanvasTkAgg(figure, master=window["-PLOT-"].TKCanvas)
-    canvas.draw()
-    canvas.get_tk_widget().pack(side="top", fill="both", expand=True)
 
-    while True:  ### MAIN LOOP ###
-        event, _ = window.read(timeout=int(GUI_timeout * 1000))
-        if event in (sg.WIN_CLOSED, "Exit"):
-            break
-        if event == "Print":
-            figure.savefig("ssdv_image.pdf", dpi=300)
-            # print pdf to default printer
-            subprocess.run(["lp", "ssdv_image.pdf"])
+def get_next_frame(
+    filename: str | Path,
+    packet_size: int,
+) -> ssdv_frame | None:
+    global frame_pos
+    with open(filename, "rb") as ssdv_file:
+        ssdv_file.seek(frame_pos)
+        data = ssdv_file.read(packet_size)
+        frame_pos = ssdv_file.tell()
+    return ssdv_frame(data, source=str(filename)) if data else None
+   
+class SSDVViewerWindow(QMainWindow):
+    def __init__(self, sock: socket.socket) -> None:
+        super().__init__()
+        self.sock = sock
+        self.ssdv_image_temp = ssdv_image("temp_image")
+        self.source = "UDP"
+        self.source_file: Path | None = None
+        self.source_packet_size = 256
+        self.demo_process: subprocess.Popen[bytes] | None = None
 
-        elif event == "Clear":
-            ssdv_image_temp.clear()
-            clear_plot_image(image_artist, canvas)
-            window["-FRAME-COUNT-"].update("Total frames: 0")
-            window["-FRAME-DETAILS-"].update("")  
-            continue
+        self.setWindowTitle("SSDV Image Viewer")
+        self.setStyleSheet(
+            f"QMainWindow {{ background-color: {WINDOW_BACKGROUND_COLOR}; }}"
+        )
+        central_widget = QWidget()
+        central_widget.setStyleSheet("QWidget { color: #f5f5dc; }")
+        self.setCentralWidget(central_widget)
+        main_layout = QVBoxLayout(central_widget)
 
-        frame = get_next_frame_UDP(sock)
-        if frame is not None:
-            ssdv_image_temp.add_frame(frame)
-            window["-FRAME-COUNT-"].update(f"Total frames: {ssdv_image_temp.num_frames}")
-            window["-FRAME-DETAILS-"].update(format_frame_details(frame))
-            ssdv_image_temp.save_bin()
-            ssdv_image_temp.decode_image()
-            pic_path = ssdv_image_temp.image_filename if os.path.exists(ssdv_image_temp.image_filename) else None
-            if pic_path is not None:
-                update_plot_image(pic_path, image_artist, canvas)
+        image_group = QGroupBox("Received SSDV Image")
+        image_group.setFont(QFont("Helvetica", 14))
+        image_group.setStyleSheet(
+            f"QGroupBox {{ color: #f5f5dc; "
+            f"background-color: {WINDOW_BACKGROUND_COLOR}; }}"
+        )
+        image_layout = QVBoxLayout(image_group)
+        self.figure = Figure(
+            figsize=(8, 5),
+            tight_layout=True,
+            facecolor="black",
+        )
+        axes = self.figure.add_subplot(111)
+        axes.set_facecolor(WINDOW_BACKGROUND_COLOR)
+        self.image_artist = axes.imshow([[0.2]], cmap="gray", vmin=0, vmax=1)
+        axes.axis("off")
+        self.canvas = FigureCanvasQTAgg(self.figure)
+        image_layout.addWidget(self.canvas)
 
-    window.close()
+        details_group = QGroupBox("SSDV Frame Header")
+        details_group.setFont(QFont("Helvetica", 14))
+        details_group.setStyleSheet(
+            "QGroupBox { color: green; background-color: black; }"
+        )
+        details_layout = QVBoxLayout(details_group)
+        self.frame_count_label = QLabel("Total frames: 0")
+        self.frame_count_label.setFont(QFont("Helvetica", 14, QFont.Weight.Bold))
+        self.frame_count_label.setStyleSheet("color: green; background-color: black;")
+        details_layout.addWidget(self.frame_count_label)
+
+        self.frame_details = QPlainTextEdit("Waiting for a frame...")
+        self.frame_details.setReadOnly(True)
+        self.frame_details.setFont(QFont("Helvetica", 14, QFont.Weight.Bold))
+        self.frame_details.setStyleSheet(
+            "color: green; background-color: black;"
+        )
+        details_layout.addWidget(self.frame_details)
+
+        content_layout = QHBoxLayout()
+        content_layout.addWidget(image_group, stretch=3)
+        content_layout.addWidget(details_group, stretch=1)
+        main_layout.addLayout(content_layout, stretch=1)
+
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(0)
+        source_button = QPushButton("Source")
+        source_button.setStyleSheet(BUTTON_STYLE)
+        source_button.setFixedSize(80, 36)
+        source_button.setFont(QFont("Helvetica", 10, QFont.Weight.Bold))
+        source_button.clicked.connect(self.select_source)
+        button_layout.addWidget(source_button)
+        button_layout.addStretch(1)
+        for label, callback in (("Print", self.print_image), ("Clear", self.clear_image)):
+            button = QPushButton(label)
+            button.setStyleSheet(BUTTON_STYLE)
+            button.setFixedSize(120, 60)
+            button.setFont(QFont("Helvetica", 14, QFont.Weight.Bold))
+            button.clicked.connect(callback)
+            button_layout.addWidget(button)
+            if label == "Print":
+                button_layout.addSpacing(16)
+            if label == "Clear":
+                button_layout.addStretch(1)
+                logo_path = Path(__file__).resolve().parent.parent / "data" / "silversat-logo-small.png"
+                logo_label = QLabel()
+                logo_label.setObjectName("silversatLogo")
+                logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                logo_label.setFixedSize(120, 60)
+                logo_label.setPixmap(
+                    QPixmap(str(logo_path)).scaled(
+                        120,
+                        60,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                )
+                button_layout.addWidget(logo_label)
+                button_layout.addStretch(1)
+        exit_button = QPushButton("Exit")
+        exit_button.setStyleSheet(BUTTON_STYLE)
+        exit_button.setFixedSize(source_button.size())
+        exit_button.setFont(source_button.font())
+        exit_button.clicked.connect(self.close)
+        button_layout.addWidget(exit_button)
+        main_layout.addLayout(button_layout)
+
+        ip_label = QLabel(f"WLAN IP address: {get_wlan_ip()}")
+        ip_label.setStyleSheet("color: #f5f5dc;")
+        ip_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_layout.addWidget(ip_label)
+
+        self.frame_timer = QTimer(self)
+        self.frame_timer.timeout.connect(self.process_next_frame)
+        self.frame_timer.start(int(GUI_timeout * 1000))
+
+    def select_source(self) -> None:
+        choices = ("UDP", "File", "Demo", "Radio")
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Frame Source")
+        dialog.setMinimumWidth(240)
+        dialog.setStyleSheet(
+            f"QDialog {{ background-color: {WINDOW_BACKGROUND_COLOR}; "
+            "color: #f5f5dc; }"
+            f"{BUTTON_STYLE}"
+            "QPushButton:checked { background-color: #1d4ed8; "
+            "border: 2px solid white; border-radius: 8px; color: white; }"
+        )
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(16)
+        button_group = QButtonGroup(dialog)
+        button_group.setExclusive(True)
+        selected_file: Path | None = None
+
+        def select_choice(choice: str) -> None:
+            global frame_pos
+            nonlocal selected_file
+            if choice == "File":
+                data_directory = Path(__file__).resolve().parent.parent / "data"
+                filename, _ = QFileDialog.getOpenFileName(
+                    dialog,
+                    "Select SSDV File",
+                    str(data_directory),
+                    "SSDV files (*.bin)",
+                )
+                if not filename:
+                    return
+                selected_file = Path(filename)
+
+            packet_size = (
+                get_ssdv_frame_size(selected_file) if selected_file is not None else None
+            )
+            if choice == "Demo":
+                if not self.start_demo_transmitter():
+                    return
+            elif not self.stop_demo_transmitter():
+                return
+
+            source_changed = self.source != choice or selected_file is not None
+            if selected_file is not None:
+                self.source_file = selected_file
+                self.source_packet_size = packet_size or 256
+                frame_pos = 0
+            self.source = choice
+            if source_changed:
+                self.clear_image()
+            dialog.accept()
+
+        def handle_source_button(checked: bool, choice: str) -> None:
+            if checked:
+                select_choice(choice)
+
+        for choice in choices:
+            button = QPushButton(choice)
+            button.setFixedSize(120, 60)
+            button.setCheckable(True)
+            button.setChecked(choice == self.source)
+            button_group.addButton(button)
+            button.clicked.connect(
+                lambda checked, source=choice: handle_source_button(checked, source)
+            )
+            layout.addWidget(button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        cancel_button = QPushButton("Cancel")
+        cancel_button.setFixedSize(120, 60)
+        cancel_button.clicked.connect(dialog.reject)
+        layout.addWidget(cancel_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+    def start_demo_transmitter(self) -> bool:
+        if self.demo_process is not None and self.demo_process.poll() is None:
+            return True
+
+        transmitter = Path(__file__).resolve().with_name("SSDV_UDP_Tx.py")
+        try:
+            self.demo_process = subprocess.Popen(
+                [sys.executable, str(transmitter)],
+                cwd=transmitter.parent.parent,
+            )
+        except OSError as error:
+            QMessageBox.critical(
+                self,
+                "Demo Source Error",
+                f"Could not start the SSDV transmitter:\n{error}",
+            )
+            self.demo_process = None
+            return False
+        return True
+
+    def stop_demo_transmitter(self) -> bool:
+        if self.demo_process is None:
+            return True
+        if self.demo_process.poll() is not None:
+            self.demo_process = None
+            return True
+
+        try:
+            self.demo_process.terminate()
+            try:
+                self.demo_process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.demo_process.kill()
+                self.demo_process.wait()
+        except OSError as error:
+            QMessageBox.critical(
+                self,
+                "Demo Source Error",
+                f"Could not stop the SSDV transmitter:\n{error}",
+            )
+            return False
+
+        self.demo_process = None
+        return True
+
+    def process_next_frame(self) -> None:
+        if self.source in ("UDP", "Demo"):
+            frame = get_next_frame_UDP(self.sock)
+        elif self.source == "File" and self.source_file is not None:
+            frame = get_next_frame(self.source_file, self.source_packet_size)
+        else:
+            return
+
+        if frame is None:
+            return
+
+        self.ssdv_image_temp.add_frame(frame)
+        self.frame_count_label.setText(
+            f"Total frames: {self.ssdv_image_temp.num_frames}"
+        )
+        self.frame_details.setPlainText(format_frame_details(frame))
+        self.ssdv_image_temp.save_bin()
+        self.ssdv_image_temp.decode_image()
+        image_path = self.ssdv_image_temp.image_filename
+        if os.path.exists(image_path):
+            update_plot_image(image_path, self.image_artist, self.canvas)
+
+    def clear_image(self) -> None:
+        self.ssdv_image_temp.clear()
+        clear_plot_image(self.image_artist, self.canvas)
+        self.frame_count_label.setText("Total frames: 0")
+        self.frame_details.clear()
+
+    def print_image(self) -> None:
+        self.figure.savefig("ssdv_image.pdf", dpi=300)
+        subprocess.run(["lp", "ssdv_image.pdf"])
+
+    def closeEvent(self, event) -> None:
+        if not self.stop_demo_transmitter():
+            event.ignore()
+            return
+        self.frame_timer.stop()
+        self.sock.close()
+        super().closeEvent(event)
+
+
+def main() -> None:
+    app = QApplication(sys.argv)
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("0.0.0.0", 5030))
+    sock.setblocking(False)
+
+    window = SSDVViewerWindow(sock)
+    screen = app.primaryScreen()
+    
+    if screen is not None:
+        screen_size = screen.availableGeometry().size()
+        window.resize(int(screen_size.width() * 0.9), int(screen_size.height() * 0.9))
+    window.show()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
