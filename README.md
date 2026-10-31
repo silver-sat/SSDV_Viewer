@@ -21,7 +21,16 @@ stops when you switch to another source or close the viewer.
 
 Press **Print** and select the connected printer in the print dialog. The image
 is printed centered on postcard-size 4 x 6 photo paper; select the Canon SELPHY
-CP1500 if it is not the system's default printer.
+CP1500 if it is not the system's default printer. Choose **Print Settings** in
+the menu to configure the logo and banner options.
+When **Include logo** is checked, the SilverSat logo is overlaid at the bottom
+right of the image at about 0.64 inch tall, with `www.silversat.org` beneath it.
+The website text switches between dark and white based on the image brightness
+under its position.
+When **Include banner** is checked, the complete saved banner message is
+overlaid near the top-left of the image in Footlight MT Light or a system
+substitute, reduced as needed to fit. Its red-orange text color is controlled by
+the `BANNER_TEXT_COLOR` setting in `src/SSDV_Viewer.py`.
 
 Run the UDP transmitter with an optional file or folder, destination IP, and port:
 

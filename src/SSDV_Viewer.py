@@ -19,17 +19,28 @@ import subprocess
 import zlib
 import socket
 from collections import Counter
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QImage, QPageLayout, QPageSize, QPainter, QPixmap
+from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QFontMetricsF,
+    QImage,
+    QPageLayout,
+    QPageSize,
+    QPainter,
+    QPixmap,
+)
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QCheckBox,
     QDialog,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -40,7 +51,9 @@ from PySide6.QtWidgets import (
 
 # Global variables
 GUI_timeout = 0.01  # Delay between frames in seconds
+UDP_PORT = 5030
 WINDOW_BACKGROUND_COLOR = "#1c1c1c"
+BANNER_TEXT_COLOR = "#FF4500"
 BUTTON_STYLE = (
     "QPushButton { background-color: #2563eb; color: white; "
     "border: none; border-radius: 8px; }"
@@ -249,6 +262,145 @@ def clear_plot_image(image_artist: AxesImage, canvas: FigureCanvasQTAgg) -> None
     canvas.draw()
 
 
+def average_image_luminance(
+    image: QImage,
+    sample_rect: QRectF,
+    displayed_image_rect: QRectF,
+) -> float:
+    luminance_total = 0.0
+    sample_count = 0
+    for row in range(3):
+        y = sample_rect.top() + sample_rect.height() * (row + 0.5) / 3
+        image_y = min(
+            image.height() - 1,
+            max(
+                0,
+                int(
+                    (y - displayed_image_rect.top())
+                    * image.height()
+                    / displayed_image_rect.height()
+                ),
+            ),
+        )
+        for column in range(9):
+            x = sample_rect.left() + sample_rect.width() * (column + 0.5) / 9
+            image_x = min(
+                image.width() - 1,
+                max(
+                    0,
+                    int(
+                        (x - displayed_image_rect.left())
+                        * image.width()
+                        / displayed_image_rect.width()
+                    ),
+                ),
+            )
+            color = image.pixelColor(image_x, image_y)
+            luminance_total += (
+                0.2126 * color.red()
+                + 0.7152 * color.green()
+                + 0.0722 * color.blue()
+            )
+            sample_count += 1
+    return luminance_total / sample_count
+
+
+def contrasting_text_color(
+    image: QImage,
+    sample_rect: QRectF,
+    displayed_image_rect: QRectF,
+) -> QColor:
+    return QColor(
+        Qt.GlobalColor.black
+        if average_image_luminance(image, sample_rect, displayed_image_rect) >= 128
+        else Qt.GlobalColor.white
+    )
+
+
+def draw_print_logo(
+    painter: QPainter,
+    image: QImage,
+    displayed_image_rect: QRectF,
+    logo: QImage,
+    dpi: int,
+) -> QColor:
+    margin = dpi * 0.08
+    text_height = dpi * 0.18
+    text_gap = dpi * 0.01
+    logo_height = max(
+        1,
+        min(
+            dpi * 0.75 * 0.85,
+            displayed_image_rect.height() - margin - text_height - text_gap,
+        ),
+    )
+    logo_size = logo.size().scaled(
+        min(
+            int(displayed_image_rect.width() * 0.45),
+            int(logo_height * logo.width() / logo.height()),
+        ),
+        int(logo_height),
+        Qt.AspectRatioMode.KeepAspectRatio,
+    )
+    text_rect = QRectF(
+        displayed_image_rect.right() - margin - logo_size.width(),
+        displayed_image_rect.bottom() - margin - text_height,
+        logo_size.width(),
+        text_height,
+    )
+    logo_rect = QRectF(
+        text_rect.left(),
+        text_rect.top() - text_gap - logo_size.height(),
+        logo_size.width(),
+        logo_size.height(),
+    )
+    painter.drawImage(logo_rect, logo)
+
+    text_color = contrasting_text_color(image, text_rect, displayed_image_rect)
+    painter.setPen(text_color)
+    painter.setFont(QFont("Helvetica", 8, QFont.Weight.Bold))
+    painter.drawText(
+        text_rect,
+        Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+        "www.silversat.org",
+    )
+    return text_color
+
+
+def draw_print_banner(
+    painter: QPainter,
+    displayed_image_rect: QRectF,
+    text: str,
+    dpi: int,
+) -> None:
+    margin = dpi * 0.08
+    banner_rect = QRectF(
+        displayed_image_rect.left() + margin,
+        displayed_image_rect.top() + margin,
+        displayed_image_rect.width() - 2 * margin,
+        dpi * 0.5,
+    )
+    font = QFont("Footlight MT Light")
+    font_size = max(1, int(dpi * 0.5))
+    font.setPixelSize(font_size)
+    metrics = QFontMetricsF(font)
+    while font_size > 1 and (
+        metrics.horizontalAdvance(text) > banner_rect.width()
+        or metrics.height() > banner_rect.height()
+    ):
+        font_size -= 1
+        font.setPixelSize(font_size)
+        metrics = QFontMetricsF(font)
+
+    painter.setFont(font)
+    painter.setPen(QColor(BANNER_TEXT_COLOR))
+    painter.drawText(
+        banner_rect,
+        Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        text,
+    )
+
+
 def get_wlan_ip() -> str:
 
     if os.name == "nt":
@@ -355,6 +507,9 @@ class SSDVViewerWindow(QMainWindow):
         self.source_file: Path | None = None
         self.source_packet_size = 256
         self.demo_process: subprocess.Popen[bytes] | None = None
+        self.include_print_logo = False
+        self.include_print_banner = False
+        self.print_banner_text = ""
 
         self.setWindowTitle("SSDV Image Viewer")
         self.setStyleSheet(
@@ -445,7 +600,9 @@ class SSDVViewerWindow(QMainWindow):
         content_layout.addWidget(details_group, stretch=1)
         main_layout.addLayout(content_layout, stretch=1)
 
-        ip_label = QLabel(f"WLAN IP address: {get_wlan_ip()}")
+        ip_label = QLabel(
+            f"WLAN IP address: {get_wlan_ip()}  |  UDP port: {UDP_PORT}"
+        )
         ip_label.setStyleSheet("color: #f5f5dc;")
         ip_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(ip_label)
@@ -457,7 +614,7 @@ class SSDVViewerWindow(QMainWindow):
     def open_menu(self) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("Menu")
-        dialog.setFixedSize(220, 160)
+        dialog.setFixedSize(220, 232)
         dialog.setStyleSheet(
             f"QDialog {{ background-color: {WINDOW_BACKGROUND_COLOR}; "
             "color: #f5f5dc; }"
@@ -478,6 +635,17 @@ class SSDVViewerWindow(QMainWindow):
         source_button.clicked.connect(lambda: request_action("source"))
         layout.addWidget(source_button, alignment=Qt.AlignmentFlag.AlignHCenter)
 
+        print_settings_button = QPushButton("Print Settings")
+        print_settings_button.setFixedSize(140, 48)
+        print_settings_button.setFont(QFont("Helvetica", 12, QFont.Weight.Bold))
+        print_settings_button.clicked.connect(
+            lambda: request_action("print_settings")
+        )
+        layout.addWidget(
+            print_settings_button,
+            alignment=Qt.AlignmentFlag.AlignHCenter,
+        )
+
         exit_button = QPushButton("Exit")
         exit_button.setFixedSize(140, 48)
         exit_button.setFont(QFont("Helvetica", 12, QFont.Weight.Bold))
@@ -487,8 +655,58 @@ class SSDVViewerWindow(QMainWindow):
         dialog.exec()
         if action_requested == "source":
             self.select_source()
+        elif action_requested == "print_settings":
+            self.open_print_settings()
         elif action_requested == "exit":
             self.close()
+
+    def open_print_settings(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Print Settings")
+        dialog.setFixedWidth(320)
+        dialog.setStyleSheet(
+            f"QDialog {{ background-color: {WINDOW_BACKGROUND_COLOR}; "
+            "color: white; }"
+            "QLabel, QCheckBox { color: white; }"
+            "QLineEdit { color: white; background-color: #303030; "
+            "border: 1px solid #888; padding: 4px; }"
+            f"{BUTTON_STYLE}"
+        )
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(12)
+
+        include_logo = QCheckBox("Include logo")
+        include_logo.setChecked(self.include_print_logo)
+        layout.addWidget(include_logo)
+
+        include_banner = QCheckBox("Include banner")
+        include_banner.setChecked(self.include_print_banner)
+        layout.addWidget(include_banner)
+
+        banner_layout = QHBoxLayout()
+        banner_label = QLabel("Banner")
+        banner_entry = QLineEdit(self.print_banner_text)
+        banner_entry.setPlaceholderText("Enter a short message")
+        banner_layout.addWidget(banner_label)
+        banner_layout.addWidget(banner_entry, stretch=1)
+        layout.addLayout(banner_layout)
+
+        buttons_layout = QHBoxLayout()
+        buttons_layout.addStretch(1)
+        save_button = QPushButton("Save")
+        save_button.setFixedSize(90, 40)
+        save_button.clicked.connect(dialog.accept)
+        buttons_layout.addWidget(save_button)
+        cancel_button = QPushButton("Cancel")
+        cancel_button.setFixedSize(90, 40)
+        cancel_button.clicked.connect(dialog.reject)
+        buttons_layout.addWidget(cancel_button)
+        layout.addLayout(buttons_layout)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.include_print_logo = include_logo.isChecked()
+            self.include_print_banner = include_banner.isChecked()
+            self.print_banner_text = banner_entry.text()
 
     def select_source(self) -> None:
         choices = ("UDP", "File", "Demo", "Radio")
@@ -691,6 +909,22 @@ class SSDVViewerWindow(QMainWindow):
             else QPageLayout.Orientation.Portrait
         )
 
+        logo = QImage()
+        if self.include_print_logo:
+            logo_path = (
+                Path(__file__).resolve().parent.parent
+                / "data"
+                / "silversat-logo-small.png"
+            )
+            logo = QImage(str(logo_path))
+            if logo.isNull():
+                QMessageBox.critical(
+                    self,
+                    "Print Image",
+                    f"Could not load the SilverSat logo:\n{logo_path}",
+                )
+                return
+
         painter = QPainter()
         if not painter.begin(printer):
             QMessageBox.critical(
@@ -713,6 +947,21 @@ class SSDVViewerWindow(QMainWindow):
         )
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         painter.drawImage(target_rect, image)
+        if self.include_print_logo:
+            draw_print_logo(
+                painter,
+                image,
+                target_rect,
+                logo,
+                printer.resolution(),
+            )
+        if self.include_print_banner and self.print_banner_text:
+            draw_print_banner(
+                painter,
+                target_rect,
+                self.print_banner_text,
+                printer.resolution(),
+            )
         if not painter.end():
             QMessageBox.critical(
                 self,
@@ -733,7 +982,7 @@ def main() -> None:
     app = QApplication(sys.argv)
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("0.0.0.0", 5030))
+    sock.bind(("0.0.0.0", UDP_PORT))
     sock.setblocking(False)
 
     window = SSDVViewerWindow(sock)
