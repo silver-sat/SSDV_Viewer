@@ -20,7 +20,8 @@ import zlib
 import socket
 from collections import Counter
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QFont, QPixmap
+from PySide6.QtGui import QFont, QImage, QPageLayout, QPageSize, QPainter, QPixmap
+from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -364,6 +365,29 @@ class SSDVViewerWindow(QMainWindow):
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
 
+        header_layout = QHBoxLayout()
+        logo_path = Path(__file__).resolve().parent.parent / "data" / "silversat-logo-small.png"
+        logo_label = QLabel()
+        logo_label.setObjectName("silversatLogo")
+        logo_label.setPixmap(
+            QPixmap(str(logo_path)).scaled(
+                140,
+                70,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        header_layout.addWidget(logo_label, alignment=Qt.AlignmentFlag.AlignLeft)
+        header_layout.addStretch(1)
+        menu_button = QPushButton("☰")
+        menu_button.setAccessibleName("Menu")
+        menu_button.setStyleSheet(BUTTON_STYLE)
+        menu_button.setFixedSize(52, 52)
+        menu_button.setFont(QFont("Helvetica", 22, QFont.Weight.Bold))
+        menu_button.clicked.connect(self.open_menu)
+        header_layout.addWidget(menu_button, alignment=Qt.AlignmentFlag.AlignRight)
+        main_layout.addLayout(header_layout)
+
         image_group = QGroupBox("Received SSDV Image")
         image_group.setFont(QFont("Helvetica", 14))
         image_group.setStyleSheet(
@@ -382,6 +406,20 @@ class SSDVViewerWindow(QMainWindow):
         axes.axis("off")
         self.canvas = FigureCanvasQTAgg(self.figure)
         image_layout.addWidget(self.canvas)
+
+        image_buttons_layout = QHBoxLayout()
+        image_buttons_layout.addStretch(1)
+        for label, callback in (("Print", self.print_image), ("Clear", self.clear_image)):
+            button = QPushButton(label)
+            button.setStyleSheet(BUTTON_STYLE)
+            button.setFixedSize(120, 60)
+            button.setFont(QFont("Helvetica", 14, QFont.Weight.Bold))
+            button.clicked.connect(callback)
+            image_buttons_layout.addWidget(button)
+            if label == "Print":
+                image_buttons_layout.addSpacing(16)
+        image_buttons_layout.addStretch(1)
+        image_layout.addLayout(image_buttons_layout)
 
         details_group = QGroupBox("SSDV Frame Header")
         details_group.setFont(QFont("Helvetica", 14))
@@ -407,49 +445,6 @@ class SSDVViewerWindow(QMainWindow):
         content_layout.addWidget(details_group, stretch=1)
         main_layout.addLayout(content_layout, stretch=1)
 
-        button_layout = QHBoxLayout()
-        button_layout.setSpacing(0)
-        source_button = QPushButton("Source")
-        source_button.setStyleSheet(BUTTON_STYLE)
-        source_button.setFixedSize(80, 36)
-        source_button.setFont(QFont("Helvetica", 10, QFont.Weight.Bold))
-        source_button.clicked.connect(self.select_source)
-        button_layout.addWidget(source_button)
-        button_layout.addStretch(1)
-        for label, callback in (("Print", self.print_image), ("Clear", self.clear_image)):
-            button = QPushButton(label)
-            button.setStyleSheet(BUTTON_STYLE)
-            button.setFixedSize(120, 60)
-            button.setFont(QFont("Helvetica", 14, QFont.Weight.Bold))
-            button.clicked.connect(callback)
-            button_layout.addWidget(button)
-            if label == "Print":
-                button_layout.addSpacing(16)
-            if label == "Clear":
-                button_layout.addStretch(1)
-                logo_path = Path(__file__).resolve().parent.parent / "data" / "silversat-logo-small.png"
-                logo_label = QLabel()
-                logo_label.setObjectName("silversatLogo")
-                logo_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                logo_label.setFixedSize(120, 60)
-                logo_label.setPixmap(
-                    QPixmap(str(logo_path)).scaled(
-                        120,
-                        60,
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation,
-                    )
-                )
-                button_layout.addWidget(logo_label)
-                button_layout.addStretch(1)
-        exit_button = QPushButton("Exit")
-        exit_button.setStyleSheet(BUTTON_STYLE)
-        exit_button.setFixedSize(source_button.size())
-        exit_button.setFont(source_button.font())
-        exit_button.clicked.connect(self.close)
-        button_layout.addWidget(exit_button)
-        main_layout.addLayout(button_layout)
-
         ip_label = QLabel(f"WLAN IP address: {get_wlan_ip()}")
         ip_label.setStyleSheet("color: #f5f5dc;")
         ip_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -458,6 +453,42 @@ class SSDVViewerWindow(QMainWindow):
         self.frame_timer = QTimer(self)
         self.frame_timer.timeout.connect(self.process_next_frame)
         self.frame_timer.start(int(GUI_timeout * 1000))
+
+    def open_menu(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Menu")
+        dialog.setFixedSize(220, 160)
+        dialog.setStyleSheet(
+            f"QDialog {{ background-color: {WINDOW_BACKGROUND_COLOR}; "
+            "color: #f5f5dc; }"
+            f"{BUTTON_STYLE}"
+        )
+        layout = QVBoxLayout(dialog)
+        layout.setSpacing(16)
+        action_requested: str | None = None
+
+        def request_action(action: str) -> None:
+            nonlocal action_requested
+            action_requested = action
+            dialog.accept()
+
+        source_button = QPushButton("Source")
+        source_button.setFixedSize(140, 48)
+        source_button.setFont(QFont("Helvetica", 12, QFont.Weight.Bold))
+        source_button.clicked.connect(lambda: request_action("source"))
+        layout.addWidget(source_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        exit_button = QPushButton("Exit")
+        exit_button.setFixedSize(140, 48)
+        exit_button.setFont(QFont("Helvetica", 12, QFont.Weight.Bold))
+        exit_button.clicked.connect(lambda: request_action("exit"))
+        layout.addWidget(exit_button, alignment=Qt.AlignmentFlag.AlignHCenter)
+
+        dialog.exec()
+        if action_requested == "source":
+            self.select_source()
+        elif action_requested == "exit":
+            self.close()
 
     def select_source(self) -> None:
         choices = ("UDP", "File", "Demo", "Radio")
@@ -608,8 +639,86 @@ class SSDVViewerWindow(QMainWindow):
         self.frame_details.clear()
 
     def print_image(self) -> None:
-        self.figure.savefig("ssdv_image.pdf", dpi=300)
-        subprocess.run(["lp", "ssdv_image.pdf"])
+        image_path = Path(self.ssdv_image_temp.image_filename)
+        image = QImage(str(image_path))
+        if image.isNull():
+            QMessageBox.warning(
+                self,
+                "Print Image",
+                "There is no image available to print.",
+            )
+            return
+
+        printers = QPrinterInfo.availablePrinters()
+        if not printers:
+            QMessageBox.critical(
+                self,
+                "Print Image",
+                "No printers are available. Connect and install a printer, then try again.",
+            )
+            return
+
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        default_printer = QPrinterInfo.defaultPrinter()
+        if not default_printer.isNull():
+            printer.setPrinterName(default_printer.printerName())
+        else:
+            printer.setPrinterName(printers[0].printerName())
+
+        paper_size = QPageSize(QPageSize.PageSizeId.Postcard)
+        printer.setPageSize(paper_size)
+        printer.setPageOrientation(
+            QPageLayout.Orientation.Landscape
+            if image.width() > image.height()
+            else QPageLayout.Orientation.Portrait
+        )
+
+        dialog = QPrintDialog(printer, self)
+        dialog.setWindowTitle("Select Printer")
+        if dialog.exec() != QPrintDialog.DialogCode.Accepted:
+            return
+
+        if not printer.setPageSize(paper_size):
+            QMessageBox.critical(
+                self,
+                "Print Image",
+                "The selected printer does not support 4 x 6 photo paper.",
+            )
+            return
+        printer.setPageOrientation(
+            QPageLayout.Orientation.Landscape
+            if image.width() > image.height()
+            else QPageLayout.Orientation.Portrait
+        )
+
+        painter = QPainter()
+        if not painter.begin(printer):
+            QMessageBox.critical(
+                self,
+                "Print Image",
+                f"Could not start printing to {printer.printerName()}.",
+            )
+            return
+
+        page_rect = printer.pageRect(QPrinter.Unit.DevicePixel)
+        image_size = image.size().scaled(
+            page_rect.size().toSize(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+        )
+        target_rect = page_rect.adjusted(
+            (page_rect.width() - image_size.width()) / 2,
+            (page_rect.height() - image_size.height()) / 2,
+            -(page_rect.width() - image_size.width()) / 2,
+            -(page_rect.height() - image_size.height()) / 2,
+        )
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.drawImage(target_rect, image)
+        if not painter.end():
+            QMessageBox.critical(
+                self,
+                "Print Image",
+                f"Printing to {printer.printerName()} did not complete successfully.",
+            )
 
     def closeEvent(self, event) -> None:
         if not self.stop_demo_transmitter():
